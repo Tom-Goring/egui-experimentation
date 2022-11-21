@@ -39,7 +39,6 @@ impl App {
                             let now_as_millis = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
                             let datetime = NaiveDateTime::from_timestamp_millis(now_as_millis as i64).unwrap();
                             let timestamp = DateTime::<Local>::from(DateTime::<Utc>::from_utc(datetime, Utc));
-                            println!("{}", timestamp.format("%H:%M:%S"));
                             let n = now_as_millis as f64;
                             v.push_back([n, x.sin()]);
                         }
@@ -59,7 +58,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(&ctx, |ui| {
+        egui::CentralPanel::default().show(ctx, |ui| {
             {
                 let data = self.data.lock().unwrap();
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -71,6 +70,10 @@ impl eframe::App for App {
                             let datetime = NaiveDateTime::from_timestamp_millis(x as i64).unwrap();
                             let timestamp = DateTime::<Local>::from(DateTime::<Utc>::from_utc(datetime, Utc));
                             format!("{}", timestamp.format("%H:%M:%S"))
+                        }).label_formatter(|_, xy| {
+                            let datetime = NaiveDateTime::from_timestamp_millis(xy.x as i64).unwrap();
+                            let timestamp = DateTime::<Local>::from(DateTime::<Utc>::from_utc(datetime, Utc));
+                            format!("x: {}\ny: {}", timestamp.format("%H:%M:%S"), xy.y) 
                         }).show(ui, |plot_ui| plot_ui.line(Line::new(points)));
                     }
                 });
@@ -84,5 +87,8 @@ impl eframe::App for App {
 use bounded_vec_deque::BoundedVecDeque;
 
 fn main() {
-    eframe::run_native("My app", eframe::NativeOptions::default(), Box::new(|cc| Box::new(App::new(cc))));
+    tracing_subscriber::fmt::init();
+    let mut opts = eframe::NativeOptions::default();
+    opts.renderer = eframe::Renderer::Wgpu;
+    eframe::run_native("My app", opts, Box::new(|cc| Box::new(App::new(cc))));
 }

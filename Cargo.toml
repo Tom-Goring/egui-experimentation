@@ -7,7 +7,8 @@ edition = "2021"
 
 [dependencies]
 egui = "0.19.0"
-eframe = { version = "0.19.0", features = ["persistence"] }
+eframe = { version = "0.19.0", features = ["persistence", "wgpu"] }
 serde = { version = "1", features = ["derive"] }
 bounded-vec-deque = "0.1.1"
 chrono = "0.4.23"
+tracing-subscriber = "0.3"

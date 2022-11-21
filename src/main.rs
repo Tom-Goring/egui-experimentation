@@ -3,7 +3,7 @@ use eframe::egui;
 use egui::plot::{Line, Plot, PlotPoints};
 
 use core::time;
-use std::{thread, sync::{Mutex, Arc}, collections::HashMap, time::{Instant, Duration}};
+use std::{thread, sync::{Mutex, Arc}, collections::HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type Wrapped<T> = Arc<Mutex<T>>;
@@ -37,8 +37,6 @@ impl App {
                     if let Ok(mut data) = data.try_lock() {
                         for (_, v) in data.iter_mut() {
                             let now_as_millis = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
-                            let datetime = NaiveDateTime::from_timestamp_millis(now_as_millis as i64).unwrap();
-                            let timestamp = DateTime::<Local>::from(DateTime::<Utc>::from_utc(datetime, Utc));
                             let n = now_as_millis as f64;
                             v.push_back([n, x.sin()]);
                         }
@@ -87,8 +85,6 @@ impl eframe::App for App {
 use bounded_vec_deque::BoundedVecDeque;
 
 fn main() {
-    tracing_subscriber::fmt::init();
-    let mut opts = eframe::NativeOptions::default();
-    opts.renderer = eframe::Renderer::Wgpu;
+    let opts = eframe::NativeOptions::default();
     eframe::run_native("My app", opts, Box::new(|cc| Box::new(App::new(cc))));
 }

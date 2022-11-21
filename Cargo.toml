@@ -12,3 +12,4 @@ serde = { version = "1", features = ["derive"] }
 bounded-vec-deque = "0.1.1"
 chrono = "0.4.23"
 tracing-subscriber = "0.3"
+egui_dock = "0.2.1"

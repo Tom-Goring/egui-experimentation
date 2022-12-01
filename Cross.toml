@@ -1,0 +1,2 @@
+[target.x86_64-pc-windows-msvc]
+image = "cross-rs/x86_64-pc-windows-msvc-cross"

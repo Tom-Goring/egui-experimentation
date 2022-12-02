@@ -1,34 +1,61 @@
+mod command;
+mod response;
+
+use crate::response::Response;
 use command::Command;
 use eframe::NativeOptions;
+use egui::Slider;
+use egui_extras::Size;
+use egui_extras::StripBuilder;
+use egui_extras::TableBuilder;
 use futures::FutureExt;
-use futures::AsyncReadExt;
+use itertools::Itertools;
+use smol::io::AsyncBufReadExt;
 use smol::io::AsyncWriteExt;
+use smol::io::BufReader;
 use smol::net::TcpStream;
-use tracing::{info, error};
-
-mod command;
+use std::sync::Arc;
+use tracing::{error, info};
 
 #[derive(Clone, Debug)]
 enum Message {
     Connected,
     Disconnected,
     Command(Command),
+    ReceivedParameters(Vec<(Arc<String>, f64)>),
 }
 
 async fn setup_socket(ip: &str, mut channels: Channels) {
     info!("Setting up tcp socket...");
     let mut socket = TcpStream::connect(ip).await.unwrap();
-    channels.message_tx.broadcast(Message::Connected).await.unwrap();
-    let mut buf = [0; 8192];
+    channels
+        .message_tx
+        .broadcast(Message::Connected)
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(socket.clone());
+    info!("TCP r/w set up. Listening...");
     loop {
+        let mut buf = String::new();
         futures::select! {
-            read_result = socket.read(&mut buf).fuse() => {
-                match read_result.map(|n| String::from_utf8(buf[0..n].to_vec())) {
-                    Ok(Ok(msg)) => {
-                        info!("{}", msg);
-                    },
-                    Ok(Err(err)) => {
-                        error!("{}", err);
+            read = reader.read_line(&mut buf).fuse() => {
+                match read {
+                    Ok(n) => {
+                        match serde_json::from_str::<Response>(&buf) {
+                            Ok(response) => match response {
+                                Response::Parameters(parameters) => {
+                                    let parameters = parameters.into_iter().map(|(k, v)| (Arc::new(k), v)).sorted_by_key(|(k, _)| k.clone()).collect::<Vec<(Arc<String>, f64)>>();
+                                    channels.message_tx.broadcast(Message::ReceivedParameters(parameters)).await.unwrap();
+                                }
+                                Response::Done => {}
+                            }
+                            Err(err) => {
+                                error!("{}", err);
+                                channels.message_tx.broadcast(Message::Disconnected).await.unwrap();
+                                break;
+                            }
+                        }
+                        info!("{} bytes read", n);
                     },
                     Err(err) => {
                         error!("{}", err);
@@ -60,7 +87,12 @@ struct Channels {
 
 impl Clone for Channels {
     fn clone(&self) -> Self {
-        Self { message_tx: self.message_tx.clone(), message_rx: self.message_rx.new_receiver(), shutdown_rx: self.shutdown_rx.new_receiver(), shutdown_tx: self.shutdown_tx.clone() }
+        Self {
+            message_tx: self.message_tx.clone(),
+            message_rx: self.message_rx.new_receiver(),
+            shutdown_rx: self.shutdown_rx.new_receiver(),
+            shutdown_tx: self.shutdown_tx.clone(),
+        }
     }
 }
 
@@ -85,66 +117,17 @@ impl Channels {
 
 struct App {
     channels: Channels,
-    connected: bool
+    connected: bool,
+    parameters: Vec<(Arc<String>, f64)>,
 }
-
-
 
 impl App {
     pub fn new() -> App {
         App {
             channels: Channels::new(),
+            parameters: Vec::new(),
             connected: false,
         }
-    }
-}
-
-impl App {
-    pub fn connect(&self) {
-        let state = self.state.clone();
-        self.futures
-            .borrow_mut()
-            .push(Promise::spawn_local(async move {
-                if let Ok(mut state) = state.try_borrow_mut() {
-                    match TcpStream::connect(state.ip.deref()).await {
-                        Ok(new_socket) => {
-                            state.socket = Some(new_socket);
-                        }
-                        Err(err) => {
-                            state.error = Some(err.to_string());
-                        }
-                    };
-                }
-                Ok(())
-            }));
-    }
-
-    pub fn send(&self, command: Command) {
-        let state = self.state.clone();
-        self.futures
-            .borrow_mut()
-            .push(Promise::spawn_local(async move {
-                if let Ok(mut state) = state.try_borrow_mut() {
-                    if let Some(socket) = &mut state.socket {
-                        let msg = serde_json::to_string(&command)?;
-                        socket.write_all(msg.as_bytes()).await?;
-                    }
-                }
-
-                let mut buf = [0; 2048];
-                let n = state.borrow_mut().socket.as_mut().context("Somehow lost the socket connection")?.read(&mut buf).await?;
-                let response: Response = serde_json::from_slice(&buf[0..n])?;
-                match response {
-                    Response::Parameters(parameters) => {
-                        state.borrow_mut().parameters = parameters
-                            .into_iter()
-                            .map(|(k, v)| (Rc::new(k), v))
-                            .collect();
-                    }
-                    Response::Done => {},
-                }
-                Ok(())
-            }));
     }
 }
 
@@ -154,6 +137,7 @@ impl eframe::App for App {
             match message {
                 Message::Connected => self.connected = true,
                 Message::Disconnected => self.connected = false,
+                Message::ReceivedParameters(parameters) => self.parameters = parameters,
                 _ => {}
             }
         }
@@ -164,15 +148,80 @@ impl eframe::App for App {
                         smol::block_on(self.channels.shutdown_tx.broadcast(())).unwrap();
                     }
                     if ui.button("Refresh parameters").clicked() {
-                        smol::block_on(self.channels.message_tx.broadcast(Message::Command(Command::ListParameters))).unwrap();
+                        smol::block_on(
+                            self.channels
+                                .message_tx
+                                .broadcast(Message::Command(Command::ListParameters)),
+                        )
+                        .unwrap();
                     }
                 });
-
-            }
-            else if ui.button("Connect").clicked() {
+                StripBuilder::new(ui)
+                    .size(Size::remainder().at_least(100.0))
+                    .vertical(|mut strip| {
+                        strip.cell(|ui| {
+                            egui::ScrollArea::horizontal().show(ui, |ui| {
+                                TableBuilder::new(ui)
+                                    .striped(true)
+                                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                                    .column(Size::remainder().at_least(100.0))
+                                    .column(Size::remainder().at_least(100.0))
+                                    .column(Size::remainder().at_least(100.0))
+                                    .resizable(true)
+                                    .header(20.0, |mut header| {
+                                        header.col(|ui| {
+                                            ui.heading("Parameter Name");
+                                        });
+                                        header.col(|ui| {
+                                            ui.heading("Parameter Value");
+                                        });
+                                        header.col(|ui| {
+                                            ui.heading("Update Value");
+                                        });
+                                    })
+                                    .body(|body| {
+                                        body.rows(
+                                            30.0,
+                                            self.parameters.len(),
+                                            |row_index, mut row| {
+                                                row.col(|ui| {
+                                                    ui.label(self.parameters[row_index].0.as_str());
+                                                });
+                                                row.col(|ui| {
+                                                    ui.add(Slider::new(
+                                                        &mut self.parameters[row_index].1,
+                                                        0.0..=100.0,
+                                                    ));
+                                                });
+                                                row.col(|ui| {
+                                                    if ui.button("Update").clicked() {
+                                                        smol::block_on(
+                                                            self.channels.message_tx.broadcast(
+                                                                Message::Command(
+                                                                    Command::SetParameterValue {
+                                                                        name: self.parameters
+                                                                            [row_index]
+                                                                            .0
+                                                                            .to_string(),
+                                                                        value: self.parameters
+                                                                            [row_index]
+                                                                            .1,
+                                                                    },
+                                                                ),
+                                                            ),
+                                                        )
+                                                        .unwrap();
+                                                    }
+                                                });
+                                            },
+                                        );
+                                    });
+                            });
+                        })
+                    });
+            } else if ui.button("Connect").clicked() {
                 smol::spawn(setup_socket("127.0.0.1:5000", self.channels.clone())).detach();
             }
-            
         });
     }
 }
@@ -192,13 +241,9 @@ fn main() {
         ..Default::default()
     };
 
-    let local = LocalExecutor::new();
-
-    future::block_on(local.run(async {
-        eframe::run_native(
-            "Test Async App",
-            options,
-            Box::new(|_cc| Box::new(App::new())),
-        );
-    }));
+    eframe::run_native(
+        "Test Async App",
+        options,
+        Box::new(|_cc| Box::new(App::new())),
+    );
 }
